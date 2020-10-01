@@ -29,12 +29,10 @@ struct Opt {
     #[structopt(name="MAX_LATITUDE", help="maximum bounding latitude")]
     max_latitude: f64,
 
-    #[structopt(name="MIN_LONGITUDE",
-        help="minimum bounding longitude")]
+    #[structopt(name="MIN_LONGITUDE", help="minimum bounding longitude")]
     min_longitude: f64,
 
-    #[structopt(name="MAX_LONGITUDE",
-        help="maximum bounding longtude")]
+    #[structopt(name="MAX_LONGITUDE", help="maximum bounding longtude")]
     max_longitude: f64,
 
     #[structopt(short, long,
@@ -136,14 +134,14 @@ fn main() {
                 // if found -> retreive Sentinel-2 image
                 if let Some(image) = image {
                     let mut images = images.write().unwrap();
-                    //datasets.push(dataset);
                     images.push(ImageDownload::Stip(node, image));
 
                     continue;
                 }
 
-                println!("image for geohash {} unavailable", geohash);
                 // TODO - generate using SATnet
+
+                println!("image for geohash {} unavailable", geohash);
             }
         });
 
@@ -201,17 +199,25 @@ fn main() {
     };
 
     // open GeoTiff driver
-    let driver = Driver::get("GTiff").compat().expect("get driver");
+    let driver = match Driver::get("GTiff").compat() {
+        Ok(driver) => driver,
+        Err(e) => panic!("failed to get GTiff driver: {}", e),
+    };
 
-    // copy image to GeoTiff format
-    let mut c_options = vec![
-        CString::new("COMPRESS=LZW").expect("create compress").into_raw(),
-        std::ptr::null_mut()
-    ];
+    // initialize copy options
+    let c_string = match CString::new("COMPRESS=LZW") {
+        Ok(c_string) => c_string.into_raw(),
+        Err(e) => panic!("failed to initialize c_options: {}", e),
+    };
 
+    let mut c_options = vec![c_string, std::ptr::null_mut()];
+
+    // write image using GeoTiff format
     let path_str = opt.output_file.to_string_lossy();
-    let _dataset_copy = dataset.create_copy(&driver, &path_str,
-        Some(c_options.as_mut_ptr())).compat().expect("dataset copy");
+    if let Err(e) = dataset.create_copy(&driver, &path_str,
+            Some(c_options.as_mut_ptr())).compat() {
+        panic!("failed to copy dataset: {}", e);
+    }
 
     // clean up potential memory leaks
     unsafe {
