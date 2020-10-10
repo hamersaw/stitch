@@ -1,5 +1,5 @@
-127.0.0.1 12289 -d /home/hamersaw/Downloads/stip-images/0
-127.0.0.1 12299 -d /home/hamersaw/Downloads/stip-images/1
-127.0.0.1 12309 -d /home/hamersaw/Downloads/stip-images/2
-127.0.0.1 12319 -d /home/hamersaw/Downloads/stip-images/3
-127.0.0.1 12329 -d /home/hamersaw/Downloads/stip-images/4
+127.0.0.1 12289
+127.0.0.1 12299
+127.0.0.1 12309
+127.0.0.1 12319
+127.0.0.1 12329

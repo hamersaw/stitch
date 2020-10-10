@@ -11,12 +11,8 @@ projectdir="$(pwd)/$(dirname $0)/.."
 hostfile="$projectdir/etc/hosts.txt"
 
 # initialize instance variables
-if [ -f "$projectdir/impl/stipd/target/debug/stitchd" ]; then
-    application="$projectdir/impl/stipd/target/debug/stitchd"
-fi
-
-if [ -f "$projectdir/impl/target/debug/stitchd" ]; then
-    application="$projectdir/impl/target/debug/stitchd"
+if [ -f "$projectdir/impl/stitchd/main.py" ]; then
+    application="$projectdir/impl/stitchd/main.py"
 fi
 
 if [ -z "$application" ]; then
@@ -35,7 +31,7 @@ while read line; do
     echo "starting node $nodeid"
     if [ $host == "127.0.0.1" ]; then
         # start application locally
-        RUST_LOG=debug $application -i $host -p $rppport $options \
+        RUST_LOG=debug $application -i $host -p $rpcport $options \
             > $projectdir/log/node-$nodeid.log 2>&1 &
 
         echo $! > $projectdir/log/node-$nodeid.pid
