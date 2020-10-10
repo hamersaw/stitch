@@ -25,20 +25,20 @@ nodeid=0
 while read line; do
     # parse host, port, and options
     host=$(echo $line | awk '{print $1}')
-    rpcport=$(echo $line | awk '{print $2}')
+    port=$(echo $line | awk '{print $2}')
     options=$(echo $line | cut -d' ' -f3-)
 
     echo "starting node $nodeid"
     if [ $host == "127.0.0.1" ]; then
         # start application locally
-        RUST_LOG=debug $application -i $host -p $rpcport $options \
+        RUST_LOG=debug $application -i $host -p $port $options \
             > $projectdir/log/node-$nodeid.log 2>&1 &
 
         echo $! > $projectdir/log/node-$nodeid.pid
     else
         # start application on remote host
         ssh rammerd@$host -n "RUST_LOG=debug \
-            $application -i $host -p $rpcport $options \
+            $application -i $host -p $port $options \
                 > $projectdir/log/node-$nodeid.log 2>&1 & \
             echo \$! > $projectdir/log/node-$nodeid.pid"
     fi
