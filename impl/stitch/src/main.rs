@@ -1,15 +1,16 @@
-use byteorder::{ReadBytesExt, WriteBytesExt};
-use gdal::raster::{Dataset, Driver};
+use gdal::raster::Driver;
 use failure::ResultExt;
 use protobuf::{Filter, Image, ImageListRequest, ImageManagementClient, Node, NodeLocateRequest, NodeManagementClient};
 use structopt::StructOpt;
 use st_image::coordinate::Geocode;
 use tonic::Request;
 
+mod tile;
+use tile::Tile;
+
 use std::error::Error;
 use std::ffi::CString;
-use std::io::{Read, Write};
-use std::net::{IpAddr, TcpStream};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -49,46 +50,6 @@ struct Opt {
     output_file: PathBuf,
 }
 
-enum ImageDownload {
-    SATnet,
-    Stip(Node, Image),
-}
-
-impl ImageDownload {
-    fn execute(&self) -> Result<Dataset, Box<dyn Error>> {
-        match self {
-            ImageDownload::SATnet => unimplemented!(),
-            ImageDownload::Stip(node, image) => {
-                // connect to stip transfer service
-                let mut stream = TcpStream::connect(&node.xfer_addr)?;
-
-                // send readop
-                stream.write_u8(0)?;
-
-                // send path
-                let path = &image.files[3].path;
-                stream.write_u8(path.len() as u8)?;
-                stream.write(path.as_bytes())?;
-
-                // send subgeocode indicator
-                stream.write_u8(0)?;
-
-                // check for failure
-                if stream.read_u8()? != 0 {
-                    let len = stream.read_u8()?;
-                    let mut buf = vec![0u8; len as usize];
-                    stream.read_exact(&mut buf)?;
-                    return Err(String::from_utf8(buf)?.into())
-                }
-                
-                // read dataset
-                let dataset = st_image::serialize::read(&mut stream)?;
-                return Ok(dataset);
-            },
-        }
-    }
-}
-
 fn main() {
     // parse command line options
     let opt = Opt::from_args();
@@ -104,13 +65,13 @@ fn main() {
 
     // open channels
     let (geohash_tx, geohash_rx) = crossbeam_channel::unbounded();
-    let images = Arc::new(RwLock::new(Vec::new()));
+    let tiles = Arc::new(RwLock::new(Vec::new()));
 
     // start worker threads
     let mut join_handles = Vec::new();
     for _ in 0..opt.thread_count {
         let geohash_rx = geohash_rx.clone();
-        let images = images.clone();
+        let tiles = tiles.clone();
         let opt = opt.clone();
 
         let join_handle = std::thread::spawn(move || {
@@ -124,22 +85,42 @@ fn main() {
                     Err(e) => panic!("failed to locate node: {}", e),
                 };
 
-                // check for Sentinel-2 image
-                let image = match get_sentinel_image(&node.rpc_addr,
-                        &opt.album, geohash, opt.timestamp) {
+                // retrieve sentinel-2 images
+                let sentinel2_images = match get_images(
+                        &node.rpc_addr, &opt.album, geohash,
+                        "Sentinel-2", opt.timestamp) {
                     Ok(image) => image,
-                    Err(e) => panic!("failed to get sentinel: {}", e),
+                    Err(e) => panic!("failed to get sentinel-2: {}", e),
                 };
 
-                // if found -> retreive Sentinel-2 image
-                if let Some(image) = image {
-                    let mut images = images.write().unwrap();
-                    images.push(ImageDownload::Stip(node, image));
+                // if sentinel-2 image on timestamp -> use stip
+                for image in sentinel2_images.iter() {
+                    if (image.timestamp - opt.timestamp).abs() <= 86400 {
+                        let mut tiles = tiles.write().unwrap();
+                        tiles.push(
+                            Tile::Stip(node.clone(), image.clone()));
+
+                        continue;
+                    }
+                }
+
+                // retrieve modis images
+                let modis_images = match get_images(&node.rpc_addr, 
+                        &opt.album, geohash, "MODIS", opt.timestamp) {
+                    Ok(image) => image,
+                    Err(e) => panic!("failed to get modis: {}", e),
+                };
+
+                // if two sentinel-2 images and one modis -> use SATnet
+                if sentinel2_images.len() >= 2
+                        && modis_images.len() >= 1 {
+                    let mut tiles = tiles.write().unwrap();
+                    tiles.push(Tile::SATnet(node.clone(),
+                        sentinel2_images[..2].to_vec(),
+                        modis_images[0].clone()));
 
                     continue;
                 }
-
-                // TODO - generate using SATnet
 
                 println!("image for geohash {} unavailable", geohash);
             }
@@ -174,9 +155,9 @@ fn main() {
 
     // download all images
     let mut datasets = Vec::new();
-    let images = images.read().unwrap();
-    for image in images.iter() {
-        let dataset = match image.execute() {
+    let tiles = tiles.read().unwrap();
+    for tile in tiles.iter() {
+        let dataset = match tile.download() {
             Ok(dataset) => dataset,
             Err(e) => panic!("failed to download image: {}", e),
         };
@@ -230,23 +211,27 @@ fn main() {
 }
 
 #[tokio::main]
-async fn get_sentinel_image(rpc_address: &str,
-        album: &str, geohash: &str, timestamp: i64)
-        -> Result<Option<Image>, Box<dyn Error>> {
+async fn get_images(rpc_address: &str, album: &str, geohash: &str,
+        platform: &str, timestamp: i64)
+        -> Result<Vec<Image>, Box<dyn Error>> {
     // initialize ImageManagement grpc client
     let mut client = ImageManagementClient::connect(
         format!("http://{}", rpc_address)).await?;
 
+    // determine timestamp filters
+    let end_timestamp = timestamp + (86400 - (timestamp % 86400));
+    let start_timestamp = end_timestamp - (15 * 86400) + 1;
+
     // initialize Filter
     let filter = Filter {
-        end_timestamp: Some(timestamp + 86400),
+        end_timestamp: Some(end_timestamp),
         geocode: Some(geohash.to_string()),
         max_cloud_coverage: None,
         min_pixel_coverage: Some(1.0),
-        platform: Some("Sentinel-2".to_string()),
+        platform: Some(platform.to_string()),
         recurse: false,
         source: None,
-        start_timestamp: Some(timestamp - 86400),
+        start_timestamp: Some(start_timestamp),
     };
 
     // initialize ImageListRequest
@@ -259,14 +244,16 @@ async fn get_sentinel_image(rpc_address: &str,
     let mut stream = client.list(Request::new(request.clone()))
         .await?.into_inner();
 
-    let mut image = None;
-    while let Some(image_proto) = stream.message().await? {
-        if image_proto.files.len() == 4 {
-            image = Some(image_proto);
+    let mut images = Vec::new();
+    while let Some(image) = stream.message().await? {
+        if image.files.len() == 4 {
+            images.push(image);
         }
     }
 
-    Ok(image)
+    // sort in descending order by timstamp
+    images.sort_by(|a, b| b.timestamp.partial_cmp(&a.timestamp).unwrap());
+    Ok(images)
 }
 
 #[tokio::main]
