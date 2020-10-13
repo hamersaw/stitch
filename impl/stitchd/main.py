@@ -1,6 +1,7 @@
 #!/bin/python3
 
 import argparse
+import gdal
 import socket
 import struct
 import sys
@@ -16,10 +17,66 @@ def handle(sock):
 
     modis_path = read_string(sock)
 
-    # TODO - process paths
-    print(modis_path)
+    # TODO - impute image
+    #print(modis_path)
 
-    # TODO - return first sentinel-2 image
+    # write success
+    sock.sendall(struct.pack('B', 0))
+
+    # open datset
+    dataset = gdal.Open(sentinel2_paths[0])
+
+    # write image dimensions
+    sock.sendall(struct.pack('>I', dataset.RasterXSize))
+    sock.sendall(struct.pack('>I', dataset.RasterYSize))
+
+    # write geotransform
+    for value in dataset.GetGeoTransform():
+        sock.sendall(struct.pack('>d', value))
+
+    # write projection
+    projection = dataset.GetProjection()
+    write_string(projection, sock)
+
+    # write gdal_type and no_data_value
+    band = dataset.GetRasterBand(1)
+
+    sock.sendall(struct.pack('>I', band.DataType))
+
+    no_data_value = band.GetNoDataValue()
+    if no_data_value != None:
+        sock.sendall(struct.pack('>B', 1))
+        sock.sendall(struct.pack('>d', no_data_value))
+    else:
+        sock.sendall(struct.pack('>B', 0))
+
+    # write rasters
+    sock.sendall(struct.pack('>B', dataset.RasterCount))
+    for i in range(0, dataset.RasterCount):
+        band = dataset.GetRasterBand(i+1)
+
+        # write band type
+        data_type = band.DataType
+        sock.sendall(struct.pack('>I', band.DataType))
+
+        # read data
+        data = band.ReadRaster(xoff=0, yoff=0,
+            xsize=band.XSize, ysize=band.YSize,
+            buf_xsize=band.XSize, buf_ysize=band.YSize,
+            buf_type=data_type)
+
+        # write data
+        if data_type == gdal.GDT_Byte:
+            sock.sendall(data)
+        elif data_type == gdal.GDT_Int16:
+            for value in data:
+                sock.sendall(struct.pack('>h', value))
+        elif data_type == gdal.GDT_UInt16:
+            for value in data:
+                sock.sendall(struct.pack('>H', value))
+        else:
+            # TODO - throw error
+            print('unsupported data type')
 
     sock.close()
 
@@ -29,6 +86,11 @@ def read_string(sock):
     buf = sock.recv(length)
     value = buf.decode('utf-8')
     return value
+
+def write_string(string, sock):
+    buf = str.encode(string)
+    sock.sendall(struct.pack('>I', len(buf)))
+    sock.sendall(buf)
 
 if __name__ == '__main__':
     # parse arguments
