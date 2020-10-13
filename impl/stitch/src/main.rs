@@ -153,7 +153,7 @@ fn main() {
                 if sentinel2_images.len() >= 2
                         && modis_images.len() >= 1 {
                     let mut tiles = tiles.write().unwrap();
-                    tiles.push(Tile::SATnet(node.clone(),
+                    tiles.push(Tile::Stitch(node.clone(),
                         sentinel2_images[..2].to_vec(),
                         modis_images[0].clone()));
 
