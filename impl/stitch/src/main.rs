@@ -75,8 +75,9 @@ fn main() {
         let opt = opt.clone();
 
         let join_handle = std::thread::spawn(move || {
-            for geohash in geohash_rx.iter() {
+            'geohash: for geohash in geohash_rx.iter() {
                 let geohash: &String = &geohash;
+                println!("{}", geohash);
 
                 // find node responsible for this geohash
                 let node = match locate_node(&opt.ip_address,
@@ -85,33 +86,70 @@ fn main() {
                     Err(e) => panic!("failed to locate node: {}", e),
                 };
 
+                let end_timestamp = opt.timestamp 
+                    + (86400 - (opt.timestamp % 86400));
+
                 // retrieve sentinel-2 images
-                let sentinel2_images = match get_images(
-                        &node.rpc_addr, &opt.album, geohash,
-                        "Sentinel-2", opt.timestamp) {
-                    Ok(image) => image,
+                let sentinel2_filter = Filter {
+                    end_timestamp: Some(end_timestamp),
+                    geocode: Some(geohash.to_string()),
+                    max_cloud_coverage: None,
+                    min_pixel_coverage: Some(1.0),
+                    platform: Some("Sentinel-2".to_string()),
+                    recurse: false,
+                    source: None,
+                    start_timestamp:
+                        Some(end_timestamp - (15 * 86400) + 1),
+                };
+
+                let sentinel2_images = match get_images(&opt.album,
+                        sentinel2_filter, &node.rpc_addr) {
+                    Ok(images) => images,
                     Err(e) => panic!("failed to get sentinel-2: {}", e),
                 };
 
+                let sentinel2_images: Vec<Image> = sentinel2_images
+                    .into_iter().filter(|x| x.files.len() == 4).collect();
+
                 // if sentinel-2 image on timestamp -> use stip
+                println!("  found {} sentinel-2 image(s)",
+                    sentinel2_images.len());
                 for image in sentinel2_images.iter() {
                     if (image.timestamp - opt.timestamp).abs() <= 86400 {
+                        println!("    using {}", image.timestamp);
                         let mut tiles = tiles.write().unwrap();
                         tiles.push(
                             Tile::Stip(node.clone(), image.clone()));
 
-                        continue;
+                        continue 'geohash;
                     }
                 }
 
                 // retrieve modis images
-                let modis_images = match get_images(&node.rpc_addr, 
-                        &opt.album, geohash, "MODIS", opt.timestamp) {
-                    Ok(image) => image,
+                let modis_filter = Filter {
+                    end_timestamp: Some(end_timestamp),
+                    geocode: Some(geohash.to_string()),
+                    max_cloud_coverage: None,
+                    min_pixel_coverage: None,
+                    platform: Some("MODIS".to_string()),
+                    recurse: false,
+                    source: None,
+                    start_timestamp:
+                        Some(end_timestamp - (10 * 86400) + 1),
+                };
+
+                let modis_images = match get_images(&opt.album,
+                        modis_filter, &node.rpc_addr) {
+                    Ok(images) => images,
                     Err(e) => panic!("failed to get modis: {}", e),
                 };
 
+                let modis_images: Vec<Image> = modis_images.into_iter()
+                    .filter(|x| x.files.len() == 2).collect();
+
                 // if two sentinel-2 images and one modis -> use SATnet
+                println!("  found {} modis image(s)",
+                    modis_images.len());
                 if sentinel2_images.len() >= 2
                         && modis_images.len() >= 1 {
                     let mut tiles = tiles.write().unwrap();
@@ -119,10 +157,10 @@ fn main() {
                         sentinel2_images[..2].to_vec(),
                         modis_images[0].clone()));
 
-                    continue;
+                    continue 'geohash;
                 }
 
-                println!("image for geohash {} unavailable", geohash);
+                println!("  image unavailable");
             }
         });
 
@@ -211,28 +249,11 @@ fn main() {
 }
 
 #[tokio::main]
-async fn get_images(rpc_address: &str, album: &str, geohash: &str,
-        platform: &str, timestamp: i64)
+async fn get_images(album: &str, filter: Filter, rpc_address: &str)
         -> Result<Vec<Image>, Box<dyn Error>> {
     // initialize ImageManagement grpc client
     let mut client = ImageManagementClient::connect(
         format!("http://{}", rpc_address)).await?;
-
-    // determine timestamp filters
-    let end_timestamp = timestamp + (86400 - (timestamp % 86400));
-    let start_timestamp = end_timestamp - (15 * 86400) + 1;
-
-    // initialize Filter
-    let filter = Filter {
-        end_timestamp: Some(end_timestamp),
-        geocode: Some(geohash.to_string()),
-        max_cloud_coverage: None,
-        min_pixel_coverage: Some(1.0),
-        platform: Some(platform.to_string()),
-        recurse: false,
-        source: None,
-        start_timestamp: Some(start_timestamp),
-    };
 
     // initialize ImageListRequest
     let request = ImageListRequest {
@@ -246,9 +267,7 @@ async fn get_images(rpc_address: &str, album: &str, geohash: &str,
 
     let mut images = Vec::new();
     while let Some(image) = stream.message().await? {
-        if image.files.len() == 4 {
-            images.push(image);
-        }
+        images.push(image);
     }
 
     // sort in descending order by timstamp
