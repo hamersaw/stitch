@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
+use std::time::Instant;
 
 #[derive(Clone, Debug, StructOpt)]
 #[structopt(name="yogi")]
@@ -25,6 +26,12 @@ struct Opt {
 
     #[structopt(short, long, help="thread count", default_value="4")]
     thread_count: u8,
+
+    #[structopt(short="s", long, help="beginning timestamp")]
+    timestamp_start: Option<i64>,
+
+    #[structopt(short="e", long, help="ending timestamp")]
+    timestamp_end: Option<i64>,
 }
 
 fn main() {
@@ -33,14 +40,14 @@ fn main() {
 
     // get all Sentinel-2 images
     let sentinel2_filter = Filter {
-        end_timestamp: None,
+        end_timestamp: opt.timestamp_end,
         geocode: None,
         max_cloud_coverage: None,
         min_pixel_coverage: Some(1.0),
         platform: Some("Sentinel-2".to_string()),
         recurse: false,
         source: None,
-        start_timestamp: None,
+        start_timestamp: opt.timestamp_start,
     };
 
     let sentinel2_images = match get_images(&opt.album, sentinel2_filter,
@@ -54,14 +61,14 @@ fn main() {
 
     // get all MODIS images
     let modis_filter = Filter {
-        end_timestamp: None,
+        end_timestamp: opt.timestamp_end,
         geocode: None,
         max_cloud_coverage: None,
         min_pixel_coverage: None,
         platform: Some("MODIS".to_string()),
         recurse: false,
         source: None,
-        start_timestamp: None,
+        start_timestamp: opt.timestamp_start,
     };
 
     let modis_images = match get_images(&opt.album, modis_filter,
@@ -99,6 +106,8 @@ fn main() {
     let (mut sentinel2_start_index, mut sentinel2_end_index) = (0, 0);
     let mut modis_index = 0;
 
+    let instant = Instant::now();
+    let mut count = 0;
     while modis_index < modis_images.len() {
         // adjust sentinel2 window
         while sentinel2_start_index + 1 < sentinel2_images.len()
@@ -147,6 +156,7 @@ fn main() {
             panic!("failed to send geohash: {}", e);
         }
 
+        count += 1;
         modis_index += 1;
     }
 
@@ -157,6 +167,10 @@ fn main() {
             panic!("failed to join worker: {:?}", e);
         }
     }
+
+    let duration = instant.elapsed();
+    println!("imputed {} image(s) in {}.{}", count,
+        duration.as_secs(), duration.subsec_nanos());
 }
 
 #[tokio::main]
@@ -199,6 +213,8 @@ fn impute(sentinel2_images: &Vec<Image>, modis_image: &Image,
     let addr = format!("{}:12289", opt.ip_address);
     let mut stream = TcpStream::connect(&addr)?;
 
+    let instant = Instant::now();
+
     // write geohash and timestamp
     write_string(&modis_image.geocode, &mut stream)?;
     stream.write_i64::<BigEndian>(modis_image.timestamp)?;
@@ -219,6 +235,12 @@ fn impute(sentinel2_images: &Vec<Image>, modis_image: &Image,
 
     // read dataset
     let dataset = st_image::serialize::read(&mut stream)?;
+
+    let duration = instant.elapsed();
+    println!("imputed {} {} in {}.{}", modis_image.geocode,
+        modis_image.timestamp,
+        duration.as_secs(), duration.subsec_nanos());
+
     Ok(())
 }
 
