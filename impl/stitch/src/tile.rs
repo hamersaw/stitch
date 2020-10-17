@@ -1,4 +1,4 @@
-use byteorder::{ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use gdal::raster::Dataset;
 use protobuf::{Image, Node};
 
@@ -44,6 +44,10 @@ impl Tile {
                 let addr = format!("{}:12289", addr_fields[0]);
 
                 let mut stream = TcpStream::connect(&addr)?;
+
+                // write geohash and timestamp
+                write_string(&modis_image.geocode, &mut stream)?;
+                stream.write_i64::<BigEndian>(modis_image.timestamp)?;
 
                 // write paths
                 stream.write_u8(sentinel2_images.len() as u8)?;
