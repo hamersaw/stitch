@@ -1,10 +1,13 @@
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crossbeam_channel::{Receiver, Sender};
 use protobuf::{Filter, Image, ImageListRequest, ImageManagementClient};
 use structopt::StructOpt;
 use tonic::Request;
 
 use std::cmp::Ordering;
 use std::error::Error;
-use std::net::IpAddr;
+use std::io::{Read, Write};
+use std::net::{IpAddr, TcpStream};
 
 #[derive(Clone, Debug, StructOpt)]
 #[structopt(name="yogi")]
@@ -70,9 +73,32 @@ fn main() {
     let modis_images: Vec<Image> = modis_images
         .into_iter().filter(|x| x.files.len() == 2).collect();
 
+    // open channels
+    let (tx, rx): (Sender<(Vec<Image>, Image)>, Receiver<(Vec<Image>, Image)>) = 
+        crossbeam_channel::unbounded();
+
+    // start worker threads
+    let mut join_handles = Vec::new();
+    for _ in 0..opt.thread_count {
+        let rx = rx.clone();
+        let opt = opt.clone();
+
+        let join_handle = std::thread::spawn(move || {
+            for (sentinel2_images, modis_image) in rx.iter() {
+                if let Err(e) = 
+                        impute(&sentinel2_images, &modis_image, &opt) {
+                    println!("impute failed: {}", e);
+                }
+            }
+        });
+
+        join_handles.push(join_handle);
+    }
+
     // process SATnet images
     let (mut sentinel2_start_index, mut sentinel2_end_index) = (0, 0);
     let mut modis_index = 0;
+
     while modis_index < modis_images.len() {
         // adjust sentinel2 window
         while sentinel2_start_index + 1 < sentinel2_images.len()
@@ -91,7 +117,6 @@ fn main() {
 
         while sentinel2_images[sentinel2_end_index].geocode <
                 sentinel2_images[sentinel2_start_index].geocode {
-            //println!("{} {}", sentinel2_start_index, sentinel2_end_index);
             sentinel2_end_index += 1;
         }
 
@@ -107,28 +132,31 @@ fn main() {
             continue;
         }
 
-        // TODO - process
-        println!("TODO - process {} {} {}", sentinel2_end_index,
-            sentinel2_start_index, modis_index);
-
         // get images
-        let sentinel2_start_image =
-            &sentinel2_images[sentinel2_start_index];
-        let sentinel2_end_image = &sentinel2_images[sentinel2_end_index];
+        let mut sentinel2_vec = Vec::new();
+        while sentinel2_vec.len() < 2 {
+            let image = &sentinel2_images[sentinel2_start_index
+                - sentinel2_vec.len()];
+            sentinel2_vec.push(image.clone());
+        }
+
         let modis_image = &modis_images[modis_index];
 
-        /*println!("  {} {}", sentinel2_end_image.geocode,
-            sentinel2_end_image.timestamp);
-        println!("  {} {}", sentinel2_start_image.geocode,
-            sentinel2_start_image.timestamp);
-        println!("  {} {}", modis_image.geocode,
-            modis_image.timestamp);*/
+        // send images down channel
+        if let Err(e) = tx.send((sentinel2_vec, modis_image.clone())) {
+            panic!("failed to send geohash: {}", e);
+        }
 
         modis_index += 1;
     }
 
-    // TODO - open channels
-    //let (geohash_tx, geohash_rx) = crossbeam_channel::unbounded();
+    // join worker threads
+    drop(tx);
+    for join_handle in join_handles {
+        if let Err(e) = join_handle.join() {
+            panic!("failed to join worker: {:?}", e);
+        }
+    }
 }
 
 #[tokio::main]
@@ -161,5 +189,50 @@ async fn get_images(album: &str, filter: Filter, rpc_address: &str)
         }
         a.timestamp.partial_cmp(&b.timestamp).unwrap()
     });
+
     Ok(images)
+}
+
+fn impute(sentinel2_images: &Vec<Image>, modis_image: &Image,
+        opt: &Opt) -> Result<(), Box<dyn Error>> {
+    // connect to stitchd service
+    let addr = format!("{}:12289", opt.ip_address);
+    let mut stream = TcpStream::connect(&addr)?;
+
+    // write geohash and timestamp
+    write_string(&modis_image.geocode, &mut stream)?;
+    stream.write_i64::<BigEndian>(modis_image.timestamp)?;
+
+    // write paths
+    stream.write_u8(sentinel2_images.len() as u8)?;
+    for image in sentinel2_images.iter() {
+        write_string(&image.files[3].path, &mut stream)?;
+    }
+
+    write_string(&modis_image.files[1].path, &mut stream)?;
+
+    // check for failure
+    if stream.read_u8()? != 0 {
+        let error_message = read_string(&mut stream)?;
+        return Err(error_message.into())
+    }
+
+    // read dataset
+    let dataset = st_image::serialize::read(&mut stream)?;
+    Ok(())
+}
+
+fn read_string<T: Read>(reader: &mut T)
+        -> Result<String, Box<dyn Error>> {
+    let len = reader.read_u8()?;
+    let mut buf = vec![0u8; len as usize];
+    reader.read_exact(&mut buf)?;
+    Ok(String::from_utf8(buf)?)
+}
+
+fn write_string<T: Write>(value: &str, writer: &mut T)
+        -> Result<(), Box<dyn Error>> {
+    writer.write_u8(value.len() as u8)?;
+    writer.write(value.as_bytes())?;
+    Ok(())
 }
