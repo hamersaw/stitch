@@ -16,6 +16,9 @@ struct Opt {
     #[structopt(short, long, help="stip album", default_value="test")]
     album: String,
 
+    #[structopt(short, long, help="size of batches", default_value="1")]
+    batch_size: usize,
+
     #[structopt(short, long,
         help="stip node ip address", default_value="127.0.0.1")]
     ip_address: IpAddr,
@@ -92,10 +95,22 @@ fn main() {
         let opt = opt.clone();
 
         let join_handle = std::thread::spawn(move || {
-            for (sentinel2_images, modis_image) in rx.iter() {
-                if let Err(e) = 
-                        impute(&sentinel2_images, &modis_image, &opt) {
-                    println!("impute failed: {}", e);
+            let mut batch = Vec::new();
+            for datum in rx.iter() {
+                batch.push(datum);
+
+                if batch.len() == opt.batch_size {
+                    if let Err(e) = process(&batch, &opt) {
+                        println!("batch process failed: {}", e);
+                    }
+
+                    batch.clear();
+                }
+            }
+
+            if batch.len() != 0 {
+                if let Err(e) = process(&batch, &opt) {
+                    println!("batch process failed: {}", e);
                 }
             }
         });
@@ -217,7 +232,7 @@ async fn get_images(album: &str, filter: Filter, rpc_address: &str)
     Ok(images)
 }
 
-fn impute(sentinel2_images: &Vec<Image>, modis_image: &Image,
+fn process(batch: &Vec<(Vec<Image>, Image)>,
         opt: &Opt) -> Result<(), Box<dyn Error>> {
     // connect to stitchd service
     let addr = format!("{}:12289", opt.ip_address);
@@ -225,17 +240,21 @@ fn impute(sentinel2_images: &Vec<Image>, modis_image: &Image,
 
     let instant = Instant::now();
 
-    // write geohash and timestamp
-    write_string(&modis_image.geocode, &mut stream)?;
-    stream.write_i64::<BigEndian>(modis_image.timestamp)?;
+    // write batch metadata
+    stream.write_u8(batch.len() as u8)?;
+    for (sentinel2_images, modis_image) in batch.iter() {
+        // write geohash and timestamp
+        write_string(&modis_image.geocode, &mut stream)?;
+        stream.write_i64::<BigEndian>(modis_image.timestamp)?;
 
-    // write paths
-    stream.write_u8(sentinel2_images.len() as u8)?;
-    for image in sentinel2_images.iter() {
-        write_string(&image.files[3].path, &mut stream)?;
+        // write paths
+        stream.write_u8(sentinel2_images.len() as u8)?;
+        for image in sentinel2_images.iter() {
+            write_string(&image.files[3].path, &mut stream)?;
+        }
+
+        write_string(&modis_image.files[1].path, &mut stream)?;
     }
-
-    write_string(&modis_image.files[1].path, &mut stream)?;
 
     // check for failure
     if stream.read_u8()? != 0 {
@@ -243,12 +262,13 @@ fn impute(sentinel2_images: &Vec<Image>, modis_image: &Image,
         return Err(error_message.into())
     }
 
-    // read dataset
-    let dataset = st_image::serialize::read(&mut stream)?;
+    // read datasets
+    for _ in 0..batch.len() {
+        let _dataset = st_image::serialize::read(&mut stream)?;
+    }
 
     let duration = instant.elapsed();
-    println!("imputed {} {} in {}.{}", modis_image.geocode,
-        modis_image.timestamp,
+    println!("processed batch (size {}) in {}.{}", batch.len(), 
         duration.as_secs(), duration.subsec_nanos());
 
     Ok(())
