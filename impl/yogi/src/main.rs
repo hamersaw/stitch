@@ -78,7 +78,8 @@ fn main() {
     };
 
     let modis_images: Vec<Image> = modis_images
-        .into_iter().filter(|x| x.files.len() == 2).collect();
+        .into_iter().filter(|x| x.files.len() == 2
+            && x.geocode.len() == 5).collect();
 
     // open channels
     let (tx, rx): (Sender<(Vec<Image>, Image)>, Receiver<(Vec<Image>, Image)>) = 
@@ -128,11 +129,20 @@ fn main() {
                 sentinel2_images[sentinel2_start_index].geocode {
             sentinel2_end_index += 1;
         }
-
-        while sentinel2_end_index + 1 < sentinel2_images.len()
+        while sentinel2_end_index < sentinel2_start_index
+                && sentinel2_end_index + 1 < sentinel2_images.len()
                 && sentinel2_images[sentinel2_end_index+1].timestamp <
-                modis_images[modis_index].timestamp - (15 * 86400){
+                    modis_images[modis_index].timestamp - (15 * 86400){
             sentinel2_end_index += 1;
+        }
+        
+        // check if geocodes are equal
+        if sentinel2_images[sentinel2_start_index].geocode
+                    != modis_images[modis_index].geocode
+                || sentinel2_images[sentinel2_start_index].timestamp
+                    > modis_images[modis_index].timestamp {
+            modis_index += 1;
+            continue;
         }
 
         // not enough sentinel2 images -> move to next MODIS image
