@@ -168,7 +168,7 @@ fn main() {
 
         // get images
         let mut sentinel2_vec = Vec::new();
-        while sentinel2_vec.len() < 2 {
+        while sentinel2_vec.len() < 3 {
             let image = &sentinel2_images[sentinel2_start_index
                 - sentinel2_vec.len()];
             sentinel2_vec.push(image.clone());

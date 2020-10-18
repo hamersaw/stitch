@@ -11,14 +11,37 @@ import tensorflow as tf
 from tensorflow.keras.models import model_from_json
 from threading import Thread
 
+from tensorflow.keras import backend as K
+tf.compat.v1.disable_eager_execution() # Disable eager mode, run in graph mode
+K.clear_session()
+
 import os
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(script_dir + '/../../../stippy/')
 
 import ImputationGeneration
 
-def impute_image(sentinel2_paths, modis_path,
-        model, encoder, geohashes, timestamps):
+#def impute_image(sentinel2_paths, modis_path,
+#        model, encoder, geohashes, timestamps):
+#    sentinel2_imgs = ImputationGeneration \
+#        .sentinel2_path_to_image_helper(sentinel2_paths)
+#    modis_imgs = np.array(ImputationGeneration.paths_to_rgb_convertor(
+#        modis_path, isSentinel=False))
+
+#    target_geo, target_woy, target_soy = ImputationGeneration \
+#        .preprocess_inputs(encoder, timestamps, geohashes)
+#    sentinel2_imgs = tf.cast(sentinel2_imgs, tf.float32)
+#    modis_imgs = tf.cast(modis_imgs, tf.float32)
+
+#    imputed_image = ImputationGeneration.unscale_images(
+#        model([sentinel2_imgs, tf.cast(target_geo, tf.float32), 
+#        tf.cast(target_woy, tf.float32),
+#        tf.cast(target_soy, tf.float32), modis_imgs]))
+#    imputed_image = tf.cast(imputed_image, tf.uint8)
+#    return imputed_image
+
+def impute_image(sentinel2_paths, modis_path, session,
+        model_graph, model, encoder, geohashes, timestamps):
     sentinel2_imgs = ImputationGeneration \
         .sentinel2_path_to_image_helper(sentinel2_paths)
     modis_imgs = np.array(ImputationGeneration.paths_to_rgb_convertor(
@@ -29,14 +52,16 @@ def impute_image(sentinel2_paths, modis_path,
     sentinel2_imgs = tf.cast(sentinel2_imgs, tf.float32)
     modis_imgs = tf.cast(modis_imgs, tf.float32)
 
-    imputed_image = ImputationGeneration.unscale_images(
-        model([sentinel2_imgs, tf.cast(target_geo, tf.float32), 
-        tf.cast(target_woy, tf.float32),
-        tf.cast(target_soy, tf.float32), modis_imgs]))
-    imputed_image = tf.cast(imputed_image, tf.uint8)
+    with session.as_default():
+        with model_graph.as_default():
+            imputed_image = ImputationGeneration.unscale_images(
+                model.predict([sentinel2_imgs, target_geo, target_woy,
+                        target_soy, modis_imgs], steps=4
+                    )).astype(np.uint8)
+
     return imputed_image
 
-def handle(encoder, model, sock):
+def handle(encoder, session, model_graph, model, sock):
     # read batch size
     batch_size = sock.recv(1, socket.MSG_WAITALL)[0]
 
@@ -47,8 +72,8 @@ def handle(encoder, model, sock):
     for i in range(0, batch_size):
         # read geohash and timestamp
         geohash = read_string(sock)
-        geohash_batch.append(geohash)
-        #geohash_batch.append('9q6qp') # TODO - necessary for testing
+        #geohash_batch.append(geohash)
+        geohash_batch.append('9q6qp') # TODO - necessary for testing
 
         timestamp_buf = sock.recv(8, socket.MSG_WAITALL)
         timestamp = struct.unpack('>q', timestamp_buf)[0]
@@ -66,8 +91,11 @@ def handle(encoder, model, sock):
         modis_batch.append(modis_path)
 
     # impute images
-    imputed_images = impute_image(sentinel2_batch, modis_batch, 
-        model, encoder, geohash_batch, timestamp_batch)
+    #imputed_images = impute_image(sentinel2_batch, modis_batch, 
+    #    model, encoder, geohash_batch, timestamp_batch)
+    imputed_images = impute_image(sentinel2_batch,
+        modis_batch, session, model_graph, model,
+        encoder, geohash_batch, timestamp_batch)
 
     # open datset
     dataset = gdal.Open(sentinel2_batch[0][0])
@@ -178,12 +206,26 @@ if __name__ == '__main__':
     encoder = le.fit(args.geohash)
 
     # load model
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+
     layers = open(args.model, 'r')
     model_structure = layers.read()
     layers.close()
 
     model = model_from_json(model_structure)
     model.load_weights(args.weights)
+
+    # perform mock prediction - building the gpu function is time consuming
+    model.predict((np.zeros((1,3,256,256,3)), np.zeros((1,1)),
+        np.zeros((1,1)), np.zeros((1,1)), np.zeros((1,16,16,3))))
+
+    session = tf.compat.v1.keras.backend.get_session()
+    model_graph = tf.compat.v1.get_default_graph()
+    model_graph.finalize()
 
     # open server socket
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -201,7 +243,7 @@ if __name__ == '__main__':
             sock, address = server_sock.accept()
 
             # start new thread to handle connection
-            Thread(target=handle, args=(encoder, model, sock, )).start()
+            Thread(target=handle, args=(encoder, session, model_graph, model, sock, )).start()
     except Exception as msg:
         print('server socket failed: ' + msg)
 
