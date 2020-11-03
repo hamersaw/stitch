@@ -1,5 +1,5 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use gdal::raster::Dataset;
+use gdal::Dataset;
 use protobuf::{Image, Node};
 
 use std::error::Error;

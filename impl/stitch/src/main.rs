@@ -1,15 +1,15 @@
-use gdal::raster::Driver;
+use gdal::{Dataset, Driver};
 use failure::ResultExt;
 use protobuf::{Filter, Image, ImageListRequest, ImageManagementClient, Node, NodeLocateRequest, NodeManagementClient};
 use structopt::StructOpt;
-use st_image::coordinate::Geocode;
+use geocode::Geocode;
 use tonic::Request;
 
 mod tile;
 use tile::Tile;
 
 use std::error::Error;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -223,7 +223,7 @@ fn main() {
         Err(e) => panic!("failed to get GTiff driver: {}", e),
     };
 
-    // initialize copy options
+    /*// initialize copy options
     let c_string = match CString::new("COMPRESS=LZW") {
         Ok(c_string) => c_string.into_raw(),
         Err(e) => panic!("failed to initialize c_options: {}", e),
@@ -245,6 +245,47 @@ fn main() {
                 let _ = CString::from_raw(ptr);
             }
         }
+    }*/
+
+    // intialize copy arguments
+    let path_str = opt.output_file.to_string_lossy().to_string();
+    let c_filename = CString::new(path_str)
+        .expect("create filename CString");
+
+    let c_compress_str = CString::new("COMPRESS=LZW")
+        .expect("create 'COMPRESS=LZW' CString");
+    let c_compress_ptr = c_compress_str.into_raw();
+    let mut c_options = vec![
+        c_compress_ptr,
+        std::ptr::null_mut()
+    ];
+
+    // copy dataset using driver
+    let c_dataset = unsafe {
+        gdal_sys::GDALCreateCopy(driver.c_driver(),
+            c_filename.as_ptr(), dataset.c_dataset(), 0,
+            c_options.as_mut_ptr(), None, std::ptr::null_mut())
+    };
+
+    // check for error
+    if c_dataset.is_null() {
+        let err_msg = unsafe {
+            let c_ptr = gdal_sys::CPLGetLastErrorMsg();
+            let c_str = CStr::from_ptr(c_ptr);
+            c_str.to_string_lossy().into_owned()
+        };
+
+        unsafe { gdal_sys::CPLErrorReset() };
+        panic!("failed to copy dataset: {}", err_msg);
+    }
+
+    let _ = unsafe {
+        Dataset::from_c_dataset(c_dataset)
+    };
+
+    // clean up c memory to mitigate leaks
+    unsafe {
+        let _ = CString::from_raw(c_compress_ptr);
     }
 }
 
