@@ -30,6 +30,9 @@ def io_worker(geohashes, pipe, server_sock):
             sentinel2_batch, modis_batch, geohash_batch, \
                 timestamp_batch = serialize.read_batch(sock)
 
+            if len(sentinel2_batch) > 1:
+                raise Exception('batch_size > 1 not supported')
+
             # compute input tensor
             tensor = impute.compile_tensor(sentinel2_batch,
                 modis_batch, encoder, geohash_batch, timestamp_batch)
@@ -70,21 +73,37 @@ def impute_worker(model_path, pipes, weights_path):
     tf.python.keras.backend.set_session(session)
     session.graph.finalize()
 
-    index = 0
+    indices = []
+    tensor = [[], [], [], [], []]
     while 1:
         try:
-            # read tensor
-            while not pipes[index].poll(0.05):
-                index = (index + 1) % len(pipes)
+            # read tensors
+            for i in range(len(pipes)):
+                # if available tensor -> read
+                if pipes[i].poll():
+                    pipe_tensor = pipes[i].recv()
 
-            # read tensor from pipe
-            tensor = pipes[index].recv()
+                    # append data
+                    indices.append(i)
+                    for j in range(len(tensor)):
+                        tensor[j].append(pipe_tensor[j][0])
+
+            # if no data -> sleep, continue
+            if len(indices) == 0:
+                time.sleep(0.1)
+                continue
 
             # impute images
             imputed_images = impute.impute_batch(model, tensor)
 
             # write imputed images to pipe
-            pipes[index].send(imputed_images)
+            for i in range(len(imputed_images)):
+                pipes[indices[i]].send([imputed_images[i]])
+
+            # clear indices and tensor
+            indices.clear()
+            for element in tensor:
+                element.clear()
         except:
             traceback.print_exc()
 
