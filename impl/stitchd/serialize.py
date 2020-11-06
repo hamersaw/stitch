@@ -100,9 +100,12 @@ def write_images(imputed_images, sentinel2_path, sock):
                 print('unsupported data type')
                 continue
 
+            data = []
             for j in range(0, band.YSize):
                 for k in range(0, band.XSize):
-                    sock.sendall(imputed_image[j][k][i])
+                    data.append(imputed_image[j][k][i])
+
+            sock.sendall(bytes(data))
 
             # read data
             #data = band.ReadRaster(xoff=0, yoff=0,

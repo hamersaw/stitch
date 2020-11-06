@@ -27,23 +27,34 @@ def io_worker(geohashes, pipe, server_sock):
             sock, address = server_sock.accept()
 
             # read batch metadata
+            read_start = time.time()
             sentinel2_batch, modis_batch, geohash_batch, \
                 timestamp_batch = serialize.read_batch(sock)
+            read_duration = time.time() - read_start
 
             if len(sentinel2_batch) > 1:
                 raise Exception('batch_size > 1 not supported')
 
             # compute input tensor
+            compile_start = time.time()
             tensor = impute.compile_tensor(sentinel2_batch,
                 modis_batch, encoder, geohash_batch, timestamp_batch)
+            compile_duration = time.time - compile_start
 
             # impute images
+            impute_start = time.time()
             pipe.send(tensor)
             imputed_images = pipe.recv()
+            impute_duration = time.time() - impute_start
 
             # write imputed images
+            write_start = time.time()
             serialize.write_images(imputed_images,
                 sentinel2_batch[0][0], sock)
+            write_duration = time.time() - write_start
+
+            print(str(read_duration) + ' ' + str(compile_duration) + ' '
+                + str(impute_duration) + ' ' + str(write_duration))
 
             # close client connection
             sock.close()
@@ -73,20 +84,24 @@ def impute_worker(model_path, pipes, weights_path):
     tf.python.keras.backend.set_session(session)
     session.graph.finalize()
 
+    index = 0
     indices = []
     tensor = [[], [], [], [], []]
     while 1:
         try:
             # read tensors
-            for i in range(len(pipes)):
-                # if available tensor -> read
-                if pipes[i].poll():
-                    pipe_tensor = pipes[i].recv()
+            count = 0
+            while count != len(pipes) and len(indices) != 10:
+                if pipes[index].poll():
+                    pipe_tensor = pipes[index].recv()
 
                     # append data
-                    indices.append(i)
+                    indices.append(index)
                     for j in range(len(tensor)):
                         tensor[j].append(pipe_tensor[j][0])
+
+                index = (index + 1) % len(pipes)
+                count += 1
 
             # if no data -> sleep, continue
             if len(indices) == 0:
