@@ -1,17 +1,15 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crossbeam_channel::{Receiver, Sender};
-use protobuf::{Filter, Image, ImageListRequest, ImageManagementClient};
+use protobuf::{Filter, Image};
 use structopt::StructOpt;
-use tonic::Request;
 
-use std::cmp::Ordering;
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
 use std::time::Instant;
 
 #[derive(Clone, Debug, StructOpt)]
-#[structopt(name="yogi")]
+#[structopt(name="stitchd")]
 struct Opt {
     #[structopt(short, long, help="stip album", default_value="test")]
     album: String,
@@ -53,7 +51,8 @@ fn main() {
         start_timestamp: opt.timestamp_start,
     };
 
-    let sentinel2_images = match get_images(&opt.album, sentinel2_filter,
+    let sentinel2_images = match yogi::get_images(
+            &opt.album, sentinel2_filter,
             &format!("{}:{}", &opt.ip_address, opt.port)) {
         Ok(images) => images,
         Err(e) => panic!("failed to get sentinel-2: {}", e),
@@ -74,7 +73,7 @@ fn main() {
         start_timestamp: opt.timestamp_start,
     };
 
-    let modis_images = match get_images(&opt.album, modis_filter,
+    let modis_images = match yogi::get_images(&opt.album, modis_filter,
             &format!("{}:{}", &opt.ip_address, opt.port)) {
         Ok(images) => images,
         Err(e) => panic!("failed to get modis: {}", e),
@@ -196,40 +195,6 @@ fn main() {
     let duration = instant.elapsed();
     println!("imputed {} image(s) in {}.{}", count,
         duration.as_secs(), duration.subsec_nanos());
-}
-
-#[tokio::main]
-async fn get_images(album: &str, filter: Filter, rpc_address: &str)
-        -> Result<Vec<Image>, Box<dyn Error>> {
-    // initialize ImageManagement grpc client
-    let mut client = ImageManagementClient::connect(
-        format!("http://{}", rpc_address)).await?;
-
-    // initialize ImageListRequest
-    let request = ImageListRequest {
-        album: album.to_string(),
-        filter: filter,
-    };
-
-    // iterate over image stream
-    let mut stream = client.list(Request::new(request.clone()))
-        .await?.into_inner();
-
-    let mut images = Vec::new();
-    while let Some(image) = stream.message().await? {
-        images.push(image);
-    }
-
-    // sort images by geohash and timestamp (ascending)
-    images.sort_by(|a, b| {
-        let geocode_cmp = a.geocode.partial_cmp(&b.geocode).unwrap();
-        if geocode_cmp != Ordering::Equal{
-            return geocode_cmp
-        }
-        a.timestamp.partial_cmp(&b.timestamp).unwrap()
-    });
-
-    Ok(images)
 }
 
 fn process(batch: &Vec<(Vec<Image>, Image)>,
