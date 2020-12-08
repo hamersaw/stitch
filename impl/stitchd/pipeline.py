@@ -27,34 +27,34 @@ def io_worker(geohashes, pipe, server_sock):
             sock, address = server_sock.accept()
 
             # read batch metadata
-            read_start = time.time()
+            #read_start = time.time()
             sentinel2_batch, modis_batch, geohash_batch, \
                 timestamp_batch = serialize.read_batch(sock)
-            read_duration = time.time() - read_start
+            #read_duration = time.time() - read_start
 
             if len(sentinel2_batch) > 1:
                 raise Exception('batch_size > 1 not supported')
 
             # compute input tensor
-            compile_start = time.time()
+            #compile_start = time.time()
             tensor = impute.compile_tensor(sentinel2_batch,
                 modis_batch, encoder, geohash_batch, timestamp_batch)
-            compile_duration = time.time - compile_start
+            #compile_duration = time.time() - compile_start
 
             # impute images
-            impute_start = time.time()
+            #impute_start = time.time()
             pipe.send(tensor)
             imputed_images = pipe.recv()
-            impute_duration = time.time() - impute_start
+            #impute_duration = time.time() - impute_start
 
             # write imputed images
-            write_start = time.time()
+            #write_start = time.time()
             serialize.write_images(imputed_images,
                 sentinel2_batch[0][0], sock)
-            write_duration = time.time() - write_start
+            #write_duration = time.time() - write_start
 
-            print(str(read_duration) + ' ' + str(compile_duration) + ' '
-                + str(impute_duration) + ' ' + str(write_duration))
+            #print(str(read_duration) + ' ' + str(compile_duration) + ' '
+            #    + str(impute_duration) + ' ' + str(write_duration))
 
             # close client connection
             sock.close()
@@ -74,6 +74,7 @@ def impute_worker(model_path, pipes, weights_path):
 
     # first prediction is time consuming, building the GPU function
     model.predict((np.zeros((1, 3, 256, 256, 3)),
+    #model.predict((np.zeros((1, 2, 256, 256, 3)),
                         np.zeros((1, 1)),
                         np.zeros((1, 1)),
                         np.zeros((1, 1)),
@@ -81,7 +82,7 @@ def impute_worker(model_path, pipes, weights_path):
 
     # make model read only, thread safe
     session = tf.compat.v1.keras.backend.get_session()
-    tf.python.keras.backend.set_session(session)
+    tf.compat.v1.keras.backend.set_session(session)
     session.graph.finalize()
 
     index = 0
@@ -92,6 +93,7 @@ def impute_worker(model_path, pipes, weights_path):
             # read tensors
             count = 0
             while count != len(pipes) and len(indices) != 10:
+            #while count != len(pipes) and len(indices) != 1:
                 if pipes[index].poll():
                     pipe_tensor = pipes[index].recv()
 
