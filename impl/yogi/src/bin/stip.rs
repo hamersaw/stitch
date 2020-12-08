@@ -22,6 +22,10 @@ struct Opt {
         help="stip node rpc port", default_value="15606")]
     port: u16,
 
+    #[structopt(short="x", long,
+        help="stip node xfer port", default_value="15616")]
+    xfer_port: u16,
+
     #[structopt(short, long, help="thread count", default_value="4")]
     thread_count: u8,
 
@@ -106,7 +110,7 @@ fn main() {
 
 fn process(image: &Image, opt: &Opt) -> Result<(), Box<dyn Error>> {
     // connect to stitchd service
-    let addr = format!("{}:15607", opt.ip_address);
+    let addr = format!("{}:{}", opt.ip_address, opt.xfer_port);
     let mut stream = TcpStream::connect(&addr)?;
 
     let instant = Instant::now();
